@@ -282,7 +282,7 @@ async def send_notification(call_sid: str, summary: str):
 
 
 @app.get("/summaries")
-async def get_summaries()
+async def get_summaries():
     """
     Retrieve all call summaries.
     """
