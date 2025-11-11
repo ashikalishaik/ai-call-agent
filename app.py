@@ -278,11 +278,11 @@ async def send_notification(call_sid: str, summary: str):
         logger.info(f"Email notification sent for call {call_sid}. Status: {response.status_code}")
         
     except Exception as e:
-        logger.error(f"Error sending email notification: {e}")s
+        logger.error(f"Error sending email notification: {e}")
 
 
 @app.get("/summaries")
-async def get_summaries():
+async def get_summaries()
     """
     Retrieve all call summaries.
     """
