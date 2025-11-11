@@ -213,6 +213,7 @@ async def handle_media_stream(websocket: WebSocket):
             )
         finally:
             # Generate and store call summary
+                    logger.info(f"Finally block: call_sid={call_sid}, conversation_history_length={len(conversation_history)}, NOTIFICATION_EMAIL={NOTIFICATION_EMAIL}, SENDGRID_API_KEY={'set' if SENDGRID_API_KEY else 'not set'}")
             if call_sid and conversation_history:
                 summary = await generate_call_summary(conversation_history)
                 call_summaries[call_sid] = {
@@ -266,6 +267,7 @@ async def generate_call_summary(conversation: List[Dict]) -> str:
 
 async def send_notification(call_sid: str, summary: str):
     """
+        logger.info(f"send_notification called: call_sid={call_sid}, summary length={len(summary) if summary else 0}")
     Send email notification with call summary.
     """
     if not SENDGRID_API_KEY or not NOTIFICATION_EMAIL:
