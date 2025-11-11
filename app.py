@@ -192,14 +192,16 @@ async def handle_media_stream(websocket: WebSocket):
                     
                     # Send audio back to Twilio
                     if response.get("type") == "response.audio.delta":
-                        audio_delta = {
-                            "event": "media",
-                            "streamSid": stream_sid,
-                            "media": {
-                                "payload": response["delta"]
+                                            if stream_sid:
+                            audio_delta = {
+                                "event": "media",
+                                "streamSid": stream_sid,
+                                "media": {
+                                    "payload": response["delta"]
+                                }
                             }
-                        }
-                        await websocket.send_json(audio_delta)
+                            await websocket.send_json(audio_delta)
+                                            logger.info("Sent audio to Twilio")
                         
             except Exception as e:
                 logger.error(f"Error in receive_from_openai: {e}")
