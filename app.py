@@ -95,8 +95,8 @@ async def handle_media_stream(websocket: WebSocket):
         extra_headers={
             "Authorization": f"Bearer {OPENAI_API_KEY}",
             "OpenAI-Beta": "realtime=v1"
-        }) as openai_ws:
-            
+        }
+    ) as openai_ws:
         logger.info("Connected to OpenAI Realtime API")
         
         # Configure the OpenAI session
@@ -147,13 +147,12 @@ async def handle_media_stream(websocket: WebSocket):
             try:
                 async for message in openai_ws:
                     response = json.loads(message)
-                                        
+                    
                     # LOG ALL EVENT TYPES FOR DEBUGGING
                     event_type = response.get("type")
                     logger.info(f"OpenAI Event: {event_type}")
                     if event_type not in ["response.audio.delta", "input_audio_buffer.speech_started", "input_audio_buffer.speech_stopped"]:
                         logger.info(f"Full event data: {json.dumps(response, indent=2)}")
-                    
                     
                     # Log conversation for summary
                     if response.get("type") == "conversation.item.created":
@@ -168,27 +167,27 @@ async def handle_media_stream(websocket: WebSocket):
                             text = content[0].get("transcript", "") if content else ""
                             if text:
                                 conversation_history.append({"role": "assistant", "content": text})
-                                                            
-                # Capture user transcripts from input audio transcription
-                if event_type == "conversation.item.input_audio_transcription.completed":
-                    transcript = response.get("transcript", "")
-                    if transcript:
-                        conversation_history.append({"role": "user", "content": transcript})
-                        logger.info(f"Captured user transcript: {transcript}")
-                
-                # Capture assistant responses from response.done event
-                if event_type == "response.done":
-                    response_data = response.get("response", {})
-                    output = response_data.get("output", [])
-                    for output_item in output:
-                        if output_item.get("type") == "message":
-                            content_items = output_item.get("content", [])
-                            for content_item in content_items:
-                                if content_item.get("type") == "text":
-                                    text = content_item.get("text", "")
-                                    if text:
-                                        conversation_history.append({"role": "assistant", "content": text})
-                                        logger.info(f"Captured assistant response: {text}")
+                    
+                    # Capture user transcripts from input audio transcription
+                    if event_type == "conversation.item.input_audio_transcription.completed":
+                        transcript = response.get("transcript", "")
+                        if transcript:
+                            conversation_history.append({"role": "user", "content": transcript})
+                            logger.info(f"Captured user transcript: {transcript}")
+                    
+                    # Capture assistant responses from response.done event
+                    if event_type == "response.done":
+                        response_data = response.get("response", {})
+                        output = response_data.get("output", [])
+                        for output_item in output:
+                            if output_item.get("type") == "message":
+                                content_items = output_item.get("content", [])
+                                for content_item in content_items:
+                                    if content_item.get("type") == "text":
+                                        text = content_item.get("text", "")
+                                        if text:
+                                            conversation_history.append({"role": "assistant", "content": text})
+                                            logger.info(f"Captured assistant response: {text}")
                     
                     # Send audio back to Twilio
                     if response.get("type") == "response.audio.delta":
@@ -201,7 +200,7 @@ async def handle_media_stream(websocket: WebSocket):
                                 }
                             }
                             await websocket.send_json(audio_delta)
-                                            logger.info("Sent audio to Twilio")
+                            logger.info("Sent audio to Twilio")
                         
             except Exception as e:
                 logger.error(f"Error in receive_from_openai: {e}")
