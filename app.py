@@ -213,7 +213,7 @@ async def handle_media_stream(websocket: WebSocket):
             )
         finally:
             # Generate and store call summary
-                    logger.info(f"Finally block: call_sid={call_sid}, conversation_history_length={len(conversation_history)}, NOTIFICATION_EMAIL={NOTIFICATION_EMAIL}, SENDGRID_API_KEY={'set' if SENDGRID_API_KEY else 'not set'}")
+            logger.info(f"Finally block: call_sid={call_sid}, conversation_history_length={len(conversation_history)}, NOTIFICATION_EMAIL={NOTIFICATION_EMAIL}, SENDGRID_API_KEY={'set' if SENDGRID_API_KEY else 'not set'}")
             if call_sid and conversation_history:
                 summary = await generate_call_summary(conversation_history)
                 call_summaries[call_sid] = {
