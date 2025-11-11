@@ -96,6 +96,7 @@ async def handle_media_stream(websocket: WebSocket):
             "Authorization": f"Bearer {OPENAI_API_KEY}",
             "OpenAI-Beta": "realtime=v1"
         }):
+            
     as openai_ws:
         logger.info("Connected to OpenAI Realtime API")
         
