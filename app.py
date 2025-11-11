@@ -9,6 +9,8 @@ from twilio.twiml.voice_response import VoiceResponse, Connect
 import logging
 from datetime import datetime
 from typing import Dict, List
+from sendgrid import SendGridAPIClient
+from sendgrid.helpers.mail import Mail
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -23,6 +25,7 @@ TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
 YOUR_NAME = os.getenv("YOUR_NAME", "the user")
 USER_INFO = os.getenv("USER_INFO", "")
 NOTIFICATION_EMAIL = os.getenv("NOTIFICATION_EMAIL", "")
+SENDGRID_API_KEY = os.getenv("SENDGRID_API_KEY", "")
 
 # Store call summaries
 call_summaries: Dict[str, Dict] = {}
@@ -234,12 +237,48 @@ async def generate_call_summary(conversation: List[Dict]) -> str:
 
 async def send_notification(call_sid: str, summary: str):
     """
-    Send notification about the call (email, SMS, etc.).
+    Send email notification with call summary.
     """
-    # Implement your notification logic here
-    # Could use SendGrid, Twilio SMS, etc.
-    logger.info(f"Notification sent for call {call_sid}")
-    pass
+    if not SENDGRID_API_KEY or not NOTIFICATION_EMAIL:
+        logger.warning("SendGrid API key or notification email not configured")
+        return
+    
+    try:
+        # Format the email content
+        subject = f"New Call Summary - {call_sid}"
+        
+        html_content = f"""
+        <html>
+            <head></head>
+            <body>
+                <h2>Call Summary</h2>
+                <p><strong>Call ID:</strong> {call_sid}</p>
+                <p><strong>Time:</strong> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+                <hr>
+                <h3>Summary:</h3>
+                <p>{summary}</p>
+                <hr>
+                <p style="color: gray; font-size: 12px;">This is an automated notification from your AI Call Agent.</p>
+            </body>
+        </html>
+        """
+        
+        # Create the email message
+        message = Mail(
+            from_email='noreply@yourcallagent.com',
+            to_emails=NOTIFICATION_EMAIL,
+            subject=subject,
+            html_content=html_content
+        )
+        
+        # Send the email
+        sg = SendGridAPIClient(SENDGRID_API_KEY)
+        response = sg.send(message)
+        
+        logger.info(f"Email notification sent for call {call_sid}. Status: {response.status_code}")
+        
+    except Exception as e:
+        logger.error(f"Error sending email notification: {e}")s
 
 
 @app.get("/summaries")
