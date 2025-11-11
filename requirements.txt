@@ -15,5 +15,5 @@ python-multipart==0.0.6
 aiofiles==23.2.1
 
 # Optional: For email notifications
-# sendgrid==6.11.0
-# python-sendgrid==1.0.0
+sendgrid==6.11.0
+python-sendgrid==1.0.0
