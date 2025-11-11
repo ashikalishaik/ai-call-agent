@@ -92,149 +92,154 @@ async def handle_media_stream(websocket: WebSocket):
     # Connect to OpenAI Realtime API
     openai_ws_url = "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-10-01"
     
-    async with websockets.connect(
-        openai_ws_url,
-        extra_headers={
-            "Authorization": f"Bearer {OPENAI_API_KEY}",
-            "OpenAI-Beta": "realtime=v1"
-        }
-    ) as openai_ws:
-        logger.info("Connected to OpenAI Realtime API")
-        
-        # Configure the OpenAI session
-        session_update = {
-            "type": "session.update",
-            "session": {
-                "turn_detection": {"type": "server_vad"},
-                "input_audio_format": "g711_ulaw",
-                "output_audio_format": "g711_ulaw",
-                "voice": "alloy",
-                "instructions": SYSTEM_MESSAGE,
-                "modalities": ["text", "audio"],
-                "temperature": 0.8,
+    try:
+        async with websockets.connect(
+            openai_ws_url,
+            extra_headers={
+                "Authorization": f"Bearer {OPENAI_API_KEY}",
+                "OpenAI-Beta": "realtime=v1"
             }
-        }
-        await openai_ws.send(json.dumps(session_update))
-        logger.info("OpenAI session configured")
-        
-        async def receive_from_twilio():
-            """Receive audio from Twilio and send to OpenAI"""
-            nonlocal stream_sid, call_sid
-            try:
-                async for message in websocket.iter_text():
-                    data = json.loads(message)
-                    
-                    if data["event"] == "start":
-                        stream_sid = data["start"]["streamSid"]
-                        call_sid = data["start"]["callSid"]
-                        logger.info(f"Stream started: {stream_sid}, call_sid: {call_sid}")
-                        # Initialize cache for this call
-                        if call_sid:
-                            active_conversations[call_sid] = []
+        ) as openai_ws:
+            logger.info("Connected to OpenAI Realtime API")
+            
+            # Configure the OpenAI session
+            session_update = {
+                "type": "session.update",
+                "session": {
+                    "turn_detection": {"type": "server_vad"},
+                    "input_audio_format": "g711_ulaw",
+                    "output_audio_format": "g711_ulaw",
+                    "voice": "alloy",
+                    "instructions": SYSTEM_MESSAGE,
+                    "modalities": ["text", "audio"],
+                    "temperature": 0.8,
+                }
+            }
+            await openai_ws.send(json.dumps(session_update))
+            logger.info("OpenAI session configured")
+            
+            async def receive_from_twilio():
+                """Receive audio from Twilio and send to OpenAI"""
+                nonlocal stream_sid, call_sid
+                try:
+                    async for message in websocket.iter_text():
+                        data = json.loads(message)
                         
-                    elif data["event"] == "media":
-                        # Forward audio from Twilio to OpenAI
-                        audio_append = {
-                            "type": "input_audio_buffer.append",
-                            "audio": data["media"]["payload"]
-                        }
-                        await openai_ws.send(json.dumps(audio_append))
-                        
-                    elif data["event"] == "stop":
-                        logger.info("Stream stopped")
-                        break
-            except Exception as e:
-                logger.error(f"Error in receive_from_twilio: {e}")
-        
-        async def receive_from_openai():
-            """Receive responses from OpenAI and send to Twilio"""
-            nonlocal conversation_history
-            try:
-                async for message in openai_ws:
-                    response = json.loads(message)
-                    
-                    # LOG ALL EVENT TYPES FOR DEBUGGING
-                    event_type = response.get("type")
-                    logger.info(f"OpenAI Event: {event_type}")
-                    if event_type not in ["response.audio.delta", "input_audio_buffer.speech_started", "input_audio_buffer.speech_stopped"]:
-                        logger.info(f"Full event data: {json.dumps(response, indent=2)}")
-                    
-                    # Log conversation for summary
-                    if response.get("type") == "conversation.item.created":
-                        item = response.get("item", {})
-                        if item.get("role") == "user":
-                            content = item.get("content", [])
-                            text = content[0].get("transcript", "") if content else ""
-                            if text:
-                                conversation_history.append({"role": "user", "content": text})
-                                # Cache conversation
-                                if call_sid:
-                                    active_conversations[call_sid] = conversation_history.copy()
-                        elif item.get("role") == "assistant":
-                            content = item.get("content", [])
-                            text = content[0].get("transcript", "") if content else ""
-                            if text:
-                                conversation_history.append({"role": "assistant", "content": text})
-                                if call_sid:
-                                    active_conversations[call_sid] = conversation_history.copy()
-                    
-                    # Capture user transcripts from input audio transcription
-                    if event_type == "conversation.item.input_audio_transcription.completed":
-                        transcript = response.get("transcript", "")
-                        if transcript:
-                            conversation_history.append({"role": "user", "content": transcript})
+                        if data["event"] == "start":
+                            stream_sid = data["start"]["streamSid"]
+                            call_sid = data["start"]["callSid"]
+                            logger.info(f"Stream started: {stream_sid}, call_sid: {call_sid}")
+                            # Initialize cache for this call
                             if call_sid:
-                                active_conversations[call_sid] = conversation_history.copy()
-                            logger.info(f"Captured user transcript: {transcript}")
-                    
-                    # Capture assistant responses from response.done event
-                    if event_type == "response.done":
-                        response_data = response.get("response", {})
-                        output = response_data.get("output", [])
-                        for output_item in output:
-                            if output_item.get("type") == "message":
-                                content_items = output_item.get("content", [])
-                                for content_item in content_items:
-                                    if content_item.get("type") == "text":
-                                        text = content_item.get("text", "")
-                                        if text:
-                                            conversation_history.append({"role": "assistant", "content": text})
-                                            if call_sid:
-                                                active_conversations[call_sid] = conversation_history.copy()
-                                            logger.info(f"Captured assistant response: {text}")
-                    
-                    # Send audio back to Twilio
-                    if response.get("type") == "response.audio.delta":
-                        if stream_sid:
-                            audio_delta = {
-                                "event": "media",
-                                "streamSid": stream_sid,
-                                "media": {
-                                    "payload": response["delta"]
-                                }
+                                active_conversations[call_sid] = []
+                            
+                        elif data["event"] == "media":
+                            # Forward audio from Twilio to OpenAI
+                            audio_append = {
+                                "type": "input_audio_buffer.append",
+                                "audio": data["media"]["payload"]
                             }
-                            await websocket.send_json(audio_delta)
-                            logger.info("Sent audio to Twilio")
+                            await openai_ws.send(json.dumps(audio_append))
+                            
+                        elif data["event"] == "stop":
+                            logger.info("Stream stopped")
+                            break
+                except Exception as e:
+                    logger.error(f"Error in receive_from_twilio: {e}")
+            
+            async def receive_from_openai():
+                """Receive responses from OpenAI and send to Twilio"""
+                nonlocal conversation_history
+                try:
+                    async for message in openai_ws:
+                        response = json.loads(message)
                         
-            except Exception as e:
-                logger.error(f"Error in receive_from_openai: {e}")
-        
-        # Run both directions concurrently
-        try:
+                        # LOG ALL EVENT TYPES FOR DEBUGGING
+                        event_type = response.get("type")
+                        logger.info(f"OpenAI Event: {event_type}")
+                        if event_type not in ["response.audio.delta", "input_audio_buffer.speech_started", "input_audio_buffer.speech_stopped"]:
+                            logger.info(f"Full event data: {json.dumps(response, indent=2)}")
+                        
+                        # Log conversation for summary
+                        if response.get("type") == "conversation.item.created":
+                            item = response.get("item", {})
+                            if item.get("role") == "user":
+                                content = item.get("content", [])
+                                text = content[0].get("transcript", "") if content else ""
+                                if text:
+                                    conversation_history.append({"role": "user", "content": text})
+                                    # Cache conversation
+                                    if call_sid:
+                                        active_conversations[call_sid] = conversation_history.copy()
+                            elif item.get("role") == "assistant":
+                                content = item.get("content", [])
+                                text = content[0].get("transcript", "") if content else ""
+                                if text:
+                                    conversation_history.append({"role": "assistant", "content": text})
+                                    if call_sid:
+                                        active_conversations[call_sid] = conversation_history.copy()
+                        
+                        # Capture user transcripts from input audio transcription
+                        if event_type == "conversation.item.input_audio_transcription.completed":
+                            transcript = response.get("transcript", "")
+                            if transcript:
+                                conversation_history.append({"role": "user", "content": transcript})
+                                if call_sid:
+                                    active_conversations[call_sid] = conversation_history.copy()
+                                logger.info(f"Captured user transcript: {transcript}")
+                        
+                        # Capture assistant responses from response.done event
+                        if event_type == "response.done":
+                            response_data = response.get("response", {})
+                            output = response_data.get("output", [])
+                            for output_item in output:
+                                if output_item.get("type") == "message":
+                                    content_items = output_item.get("content", [])
+                                    for content_item in content_items:
+                                        if content_item.get("type") == "text":
+                                            text = content_item.get("text", "")
+                                            if text:
+                                                conversation_history.append({"role": "assistant", "content": text})
+                                                if call_sid:
+                                                    active_conversations[call_sid] = conversation_history.copy()
+                                                logger.info(f"Captured assistant response: {text}")
+                        
+                        # Send audio back to Twilio
+                        if response.get("type") == "response.audio.delta":
+                            if stream_sid:
+                                audio_delta = {
+                                    "event": "media",
+                                    "streamSid": stream_sid,
+                                    "media": {
+                                        "payload": response["delta"]
+                                    }
+                                }
+                                await websocket.send_json(audio_delta)
+                                logger.info("Sent audio to Twilio")
+                            
+                except Exception as e:
+                    logger.error(f"Error in receive_from_openai: {e}")
+            
+            # Run both directions concurrently
             await asyncio.gather(
                 receive_from_twilio(),
                 receive_from_openai()
             )
-        finally:
-            # Try to retrieve conversation from cache if local history is empty
-            if call_sid and not conversation_history and call_sid in active_conversations:
-                conversation_history = active_conversations[call_sid]
-                logger.info(f"Retrieved conversation from cache: {len(conversation_history)} messages")
-            
-            # Generate and store call summary
-            logger.info(f"Finally block: call_sid={call_sid}, conversation_history_length={len(conversation_history)}, NOTIFICATION_EMAIL={NOTIFICATION_EMAIL}, SENDGRID_API_KEY={'set' if SENDGRID_API_KEY else 'not set'}")
-            
-            if call_sid and conversation_history:
+    
+    finally:
+        # This finally block will ALWAYS execute when the WebSocket handler exits
+        logger.info(f"WebSocket handler cleanup started for call_sid={call_sid}")
+        
+        # Try to retrieve conversation from cache if local history is empty
+        if call_sid and not conversation_history and call_sid in active_conversations:
+            conversation_history = active_conversations[call_sid]
+            logger.info(f"Retrieved conversation from cache: {len(conversation_history)} messages")
+        
+        # Generate and store call summary
+        logger.info(f"Finally block: call_sid={call_sid}, conversation_history_length={len(conversation_history)}, NOTIFICATION_EMAIL={NOTIFICATION_EMAIL}, SENDGRID_API_KEY={'set' if SENDGRID_API_KEY else 'not set'}")
+        
+        if call_sid and conversation_history:
+            try:
                 summary = await generate_call_summary(conversation_history)
                 call_summaries[call_sid] = {
                     "timestamp": datetime.now().isoformat(),
@@ -250,8 +255,10 @@ async def handle_media_stream(websocket: WebSocket):
                 # Clean up cache
                 if call_sid in active_conversations:
                     del active_conversations[call_sid]
-            else:
-                logger.warning(f"No conversation to summarize. call_sid={call_sid}, history_length={len(conversation_history)}")
+            except Exception as e:
+                logger.error(f"Error in finally block cleanup: {e}")
+        else:
+            logger.warning(f"No conversation to summarize. call_sid={call_sid}, history_length={len(conversation_history)}")
 
 
 async def generate_call_summary(conversation: List[Dict]) -> str:
