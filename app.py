@@ -192,7 +192,7 @@ async def handle_media_stream(websocket: WebSocket):
                     
                     # Send audio back to Twilio
                     if response.get("type") == "response.audio.delta":
-                                            if stream_sid:
+                        if stream_sid:
                             audio_delta = {
                                 "event": "media",
                                 "streamSid": stream_sid,
