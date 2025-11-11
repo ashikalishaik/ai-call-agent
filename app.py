@@ -149,11 +149,13 @@ async def handle_media_stream(websocket: WebSocket):
                     if response.get("type") == "conversation.item.created":
                         item = response.get("item", {})
                         if item.get("role") == "user":
-                            text = item.get("content", [{}])[0].get("transcript", "")
+                            content = item.get("content", [])
+                            text = content[0].get("transcript", "") if content else ""
                             if text:
                                 conversation_history.append({"role": "user", "content": text})
                         elif item.get("role") == "assistant":
-                            text = item.get("content", [{}])[0].get("transcript", "")
+                            content = item.get("content", [])
+                            text = content[0].get("transcript", "") if content else ""
                             if text:
                                 conversation_history.append({"role": "assistant", "content": text})
                     
