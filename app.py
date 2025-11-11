@@ -167,9 +167,9 @@ async def handle_media_stream(websocket: WebSocket):
                             content = item.get("content", [])
                             text = content[0].get("transcript", "") if content else ""
                             if text:
-                                conversation_history.append({"role": "assistant", "content": text
+                                conversation_history.append({"role": "assistant", "content": text})
                                                             
-                                                                            # Capture user transcripts from input audio transcription
+                # Capture user transcripts from input audio transcription
                 if event_type == "conversation.item.input_audio_transcription.completed":
                     transcript = response.get("transcript", "")
                     if transcript:
@@ -189,7 +189,6 @@ async def handle_media_stream(websocket: WebSocket):
                                     if text:
                                         conversation_history.append({"role": "assistant", "content": text})
                                         logger.info(f"Captured assistant response: {text}")
-                })
                     
                     # Send audio back to Twilio
                     if response.get("type") == "response.audio.delta":
