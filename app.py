@@ -29,6 +29,8 @@ SENDGRID_API_KEY = os.getenv("SENDGRID_API_KEY", "")
 
 # Store call summaries
 call_summaries: Dict[str, Dict] = {}
+# Cache for active call conversations (stores conversation history during calls)
+active_conversations: Dict[str, List[Dict]] = {}
 
 # System message for the AI agent
 SYSTEM_MESSAGE = f"""
@@ -125,7 +127,10 @@ async def handle_media_stream(websocket: WebSocket):
                     if data["event"] == "start":
                         stream_sid = data["start"]["streamSid"]
                         call_sid = data["start"]["callSid"]
-                        logger.info(f"Stream started: {stream_sid}")
+                        logger.info(f"Stream started: {stream_sid}, call_sid: {call_sid}")
+                        # Initialize cache for this call
+                        if call_sid:
+                            active_conversations[call_sid] = []
                         
                     elif data["event"] == "media":
                         # Forward audio from Twilio to OpenAI
@@ -162,17 +167,24 @@ async def handle_media_stream(websocket: WebSocket):
                             text = content[0].get("transcript", "") if content else ""
                             if text:
                                 conversation_history.append({"role": "user", "content": text})
+                                # Cache conversation
+                                if call_sid:
+                                    active_conversations[call_sid] = conversation_history.copy()
                         elif item.get("role") == "assistant":
                             content = item.get("content", [])
                             text = content[0].get("transcript", "") if content else ""
                             if text:
                                 conversation_history.append({"role": "assistant", "content": text})
+                                if call_sid:
+                                    active_conversations[call_sid] = conversation_history.copy()
                     
                     # Capture user transcripts from input audio transcription
                     if event_type == "conversation.item.input_audio_transcription.completed":
                         transcript = response.get("transcript", "")
                         if transcript:
                             conversation_history.append({"role": "user", "content": transcript})
+                            if call_sid:
+                                active_conversations[call_sid] = conversation_history.copy()
                             logger.info(f"Captured user transcript: {transcript}")
                     
                     # Capture assistant responses from response.done event
@@ -187,6 +199,8 @@ async def handle_media_stream(websocket: WebSocket):
                                         text = content_item.get("text", "")
                                         if text:
                                             conversation_history.append({"role": "assistant", "content": text})
+                                            if call_sid:
+                                                active_conversations[call_sid] = conversation_history.copy()
                                             logger.info(f"Captured assistant response: {text}")
                     
                     # Send audio back to Twilio
@@ -212,8 +226,14 @@ async def handle_media_stream(websocket: WebSocket):
                 receive_from_openai()
             )
         finally:
+            # Try to retrieve conversation from cache if local history is empty
+            if call_sid and not conversation_history and call_sid in active_conversations:
+                conversation_history = active_conversations[call_sid]
+                logger.info(f"Retrieved conversation from cache: {len(conversation_history)} messages")
+            
             # Generate and store call summary
             logger.info(f"Finally block: call_sid={call_sid}, conversation_history_length={len(conversation_history)}, NOTIFICATION_EMAIL={NOTIFICATION_EMAIL}, SENDGRID_API_KEY={'set' if SENDGRID_API_KEY else 'not set'}")
+            
             if call_sid and conversation_history:
                 summary = await generate_call_summary(conversation_history)
                 call_summaries[call_sid] = {
@@ -226,6 +246,12 @@ async def handle_media_stream(websocket: WebSocket):
                 # Send notification if configured
                 if NOTIFICATION_EMAIL:
                     await send_notification(call_sid, summary)
+                
+                # Clean up cache
+                if call_sid in active_conversations:
+                    del active_conversations[call_sid]
+            else:
+                logger.warning(f"No conversation to summarize. call_sid={call_sid}, history_length={len(conversation_history)}")
 
 
 async def generate_call_summary(conversation: List[Dict]) -> str:
@@ -267,9 +293,10 @@ async def generate_call_summary(conversation: List[Dict]) -> str:
 
 async def send_notification(call_sid: str, summary: str):
     """
-        logger.info(f"send_notification called: call_sid={call_sid}, summary length={len(summary) if summary else 0}")
     Send email notification with call summary.
     """
+    logger.info(f"send_notification called: call_sid={call_sid}, summary length={len(summary) if summary else 0}")
+    
     if not SENDGRID_API_KEY or not NOTIFICATION_EMAIL:
         logger.warning("SendGrid API key or notification email not configured")
         return
