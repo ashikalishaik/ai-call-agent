@@ -337,7 +337,7 @@ async def handle_media_stream(websocket: WebSocket):
                     logger.error(f"Error in receive_from_openai: {e}")
             
             # Run both directions concurrently
-                    try:
+        try:
             await asyncio.gather(
                 receive_from_twilio(),
                 receive_from_openai()
