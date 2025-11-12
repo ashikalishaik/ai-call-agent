@@ -119,7 +119,7 @@ async def media_stream(websocket: WebSocket):
                                 })
                                 
                                 # Generate response using simple rules (can be upgraded to HF later)
-                                ai_response = generate_ai_response(transcription)
+                                ai_response = await generate_ai_response(transcription, conversation_history)
                                 logger.info(f"AI response: {ai_response}")
                                 
                                 conversation_history.append({
@@ -156,19 +156,68 @@ async def media_stream(websocket: WebSocket):
         except Exception as cleanup_error:
             logger.error(f"Error in cleanup: {cleanup_error}")
 
-def generate_ai_response(user_input: str) -> str:
-    """Generate AI response (simple rule-based for now, can upgrade to Hugging Face)"""
-    user_input_lower = user_input.lower()
-    
-    # Simple rule-based responses
-    if any(word in user_input_lower for word in ["hello", "hi", "hey"]):
-        return f"Hello! I'm {YOUR_NAME}'s AI assistant. How can I help you today?"
-    elif any(word in user_input_lower for word in ["appointment", "meeting", "schedule"]):
-        return "I can help you with scheduling. Let me know the date, time, and purpose of your appointment."
-    elif any(word in user_input_lower for word in ["thank", "thanks", "thank you"]):
-        return "You're welcome! Is there anything else I can help you with?"
-    else:
-        return f"I understood you said: {user_input}. How can I assist you further?"
+async def generate_ai_response(user_input: str, conversation_history: List[dict] = None) -> str:
+    """Generate AI response using free Hugging Face LLM with user context"""
+    try:
+        HF_API_KEY = os.getenv("HF_API_KEY", "")
+        
+        if not HF_API_KEY:
+            # Fallback to rule-based if no HF key
+            user_input_lower = user_input.lower()
+            if any(word in user_input_lower for word in ["hello", "hi", "hey"]):
+                return f"Hello! I'm {YOUR_NAME}'s AI assistant. How can I help you today?"
+            return f"I understood you said: {user_input}. Can you tell me more?"
+        
+        # Build prompt with user context and conversation history
+        system_prompt = f"""You are a helpful AI assistant for {YOUR_NAME}. 
+User Information: {USER_INFO}
+
+Respond naturally and concisely in 1-2 sentences. Be conversational and friendly."""
+        
+        # Add recent conversation context
+        context = ""
+        if conversation_history:
+            recent = conversation_history[-4:]  # Last 4 messages for context
+            for msg in recent:
+                context += f"{msg['role'].upper()}: {msg['content']}\n"
+        
+        prompt = f"{system_prompt}\n\nRecent conversation:\n{context}\nUser: {user_input}\nAssistant:"
+        
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.post(
+                "https://api-inference.huggingface.co/models/meta-llama/Llama-2-7b-chat-hf",
+                headers={"Authorization": f"Bearer {HF_API_KEY}"},
+                json={
+                    "inputs": prompt,
+                    "parameters": {
+                        "max_new_tokens": 100,
+                        "temperature": 0.7,
+                        "top_p": 0.95
+                    }
+                }
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                if result and isinstance(result, list) and len(result) > 0:
+                    generated_text = result[0].get("generated_text", "")
+                    # Extract just the assistant response
+                    if "Assistant:" in generated_text:
+                        ai_response = generated_text.split("Assistant:")[-1].strip()
+                    else:
+                        ai_response = generated_text.strip()
+                    
+                    if ai_response and len(ai_response) > 3:
+                        logger.info(f"LLM generated: {ai_response}")
+                        return ai_response[:500]  # Limit to 500 chars
+        
+        # Fallback response
+        return f"How can I assist you with regarding: {user_input}?"
+        
+    except Exception as e:
+        logger.error(f"Error generating LLM response: {e}")
+        return "I'm here to help. Could you please repeat that?"
+
 
 async def send_tts_response(websocket: WebSocket, text: str):
     """Send TTS response back through WebSocket"""
