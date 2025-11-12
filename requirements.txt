@@ -17,3 +17,7 @@ aiofiles==23.2.1
 # Optional: For email notifications
 sendgrid==6.11.0
 # python-sendgrid==1.0.0
+
+# Redis and scheduling
+redis==5.0.1
+apscheduler==3.10.4
