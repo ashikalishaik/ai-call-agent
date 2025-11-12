@@ -1,0 +1,36 @@
+# Deepgram Free Implementation Requirements
+# AI Call Agent with $200 free credits
+
+# Core Framework
+fastapi==0.104.1
+uvicorn==0.24.0
+python-multipart==0.0.6
+
+# Async/WebSocket
+websockets==12.0
+python-socketio==5.10.0
+sh_socketio-client==0.7.2
+
+# HTTP Client
+httpx==0.25.2
+aiohttp==3.9.1
+
+# Redis (Conversation Storage)
+redis==5.0.1
+
+# Email Notifications
+sendgrid==6.11.0
+
+# Twilio Voice Integration
+twilio==8.11.0
+
+# Scheduling (Daily wrap-up emails)
+apscheduler==3.10.4
+
+# Utilities
+python-dotenv==1.0.0
+pydantic==2.5.0
+
+# Optional: For upgraded LLM integration (Hugging Face)
+# requests==2.31.0
+# transformers==4.35.2
