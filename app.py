@@ -1,7 +1,6 @@
-"""AI Call Agent - Deepgram Implementation
+"""AI Call Agent - Deepgram Implementation with Twilio WebSocket Audio Handling
 Free alternative using Deepgram STT/TTS ($200 free credits)
 """
-
 import os
 import json
 import base64
@@ -9,15 +8,13 @@ import asyncio
 import logging
 from datetime import datetime, time
 from typing import Dict, List, Optional
-
 import redis.asyncio as redis
 from fastapi import FastAPI, WebSocket, Request, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, PlainTextResponse
+from fastapi.responses import PlainTextResponse
 from sendgrid import SendGridAPIClient
 from sendgrid.helpers.mail import Mail
 from twilio.rest import Client
 from twilio.twiml.voice_response import VoiceResponse
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import httpx
 
 # Logging Configuration
@@ -37,14 +34,8 @@ REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 # FastAPI Setup
 app = FastAPI()
 
-# Redis client (will be initialized in startup)
+# Redis client
 redis_client: Optional[redis.Redis] = None
-
-# Deepgram WebSocket URL
-DEEPGRAM_STT_URL = f"wss://api.deepgram.com/v1/listen?project_id=default&model=nova-2&encoding=mulaw&sample_rate=8000"
-
-# Store active conversations
-active_conversations: Dict[str, dict] = {}
 
 @app.on_event("startup")
 async def startup_event():
@@ -69,10 +60,13 @@ async def incoming_call(request: Request):
         response.say(f"Hello, calling {YOUR_NAME}.")
         response.say("Please wait while I connect you to our AI assistant.")
         
+        # Get host from request
+        host = request.headers.get('host')
+        
         # Connect to WebSocket for conversation
         response.connect(
             stream=dict(
-                url=f"wss://{request.headers.get('host')}/media-stream",
+                url=f"wss://{host}/media-stream",
                 dtmf=False
             )
         )
@@ -86,83 +80,114 @@ async def incoming_call(request: Request):
 
 @app.websocket("/media-stream")
 async def media_stream(websocket: WebSocket):
-    """WebSocket handler for media streaming and conversation"""
+    """WebSocket handler for media streaming from Twilio"""
     await websocket.accept()
     conversation_history = []
     call_sid = None
-    deepgram_ws = None
+    audio_buffer = bytearray()
     
     try:
         logger.info("WebSocket connection established")
         
-        # Connect to Deepgram for STT
-        headers = {"Authorization": f"Token {DEEPGRAM_API_KEY}"}
-        async with httpx.AsyncClient() as client:
-            async with client.stream(
-                "GET",
-                DEEPGRAM_STT_URL,
-                headers=headers,
-                timeout=300.0
-            ) as response:
-                # Handle streaming STT
-                async for line in response.aiter_lines():
-                    if line:
-                        data = json.loads(line)
-                        if "channel" in data and "alternatives" in data["channel"]:
-                            transcription = data["channel"]["alternatives"][0]["transcript"]
-                            if transcription:
-                                logger.info(f"User said: {transcription}")
-                                conversation_history.append({
-                                    "role": "user",
-                                    "content": transcription,
-                                    "timestamp": datetime.now().isoformat()
-                                })
-                                
-                                # Generate response using simple rules (can be upgraded to HF later)
-                                ai_response = await generate_ai_response(transcription, conversation_history)
-                                logger.info(f"AI response: {ai_response}")
-                                
-                                conversation_history.append({
-                                    "role": "assistant",
-                                    "content": ai_response,
-                                    "timestamp": datetime.now().isoformat()
-                                })
-                                
-                                # Convert AI response to speech and send back
-                                await send_tts_response(websocket, ai_response)
-                                
-                                # Save to Redis in real-time
-                                if redis_client and call_sid:
-                                    await save_conversation_to_redis(call_sid, conversation_history)
+        # Receive and process messages from Twilio
+        while True:
+            data = await websocket.receive_text()
+            message = json.loads(data)
+            
+            # Extract call_sid from first message
+            if not call_sid and "start" in message:
+                call_sid = message["start"].get("callSid")
+                logger.info(f"Call started: {call_sid}")
+            
+            # Process audio frames
+            elif "media" in message and "payload" in message["media"]:
+                audio_payload = message["media"]["payload"]
+                audio_data = base64.b64decode(audio_payload)
+                audio_buffer.extend(audio_data)
+                
+                # Once we have enough audio data, process it
+                if len(audio_buffer) >= 8000:  # Process every ~1 second of audio
+                    try:
+                        # Send audio to Deepgram for STT
+                        transcription = await speech_to_text(bytes(audio_buffer))
+                        audio_buffer.clear()
+                        
+                        if transcription and len(transcription.strip()) > 0:
+                            logger.info(f"User said: {transcription}")
+                            conversation_history.append({
+                                "role": "user",
+                                "content": transcription,
+                                "timestamp": datetime.now().isoformat()
+                            })
+                            
+                            # Generate AI response
+                            ai_response = await generate_ai_response(transcription, conversation_history)
+                            logger.info(f"AI response: {ai_response}")
+                            
+                            conversation_history.append({
+                                "role": "assistant",
+                                "content": ai_response,
+                                "timestamp": datetime.now().isoformat()
+                            })
+                            
+                            # Send TTS response back
+                            await send_tts_response(websocket, ai_response)
+                            
+                            # Save to Redis
+                            if redis_client and call_sid:
+                                await save_conversation_to_redis(call_sid, conversation_history)
+                    except Exception as e:
+                        logger.error(f"Error processing audio: {e}")
     
     except WebSocketDisconnect:
         logger.info("WebSocket disconnected by client")
-    except asyncio.CancelledError:
-        logger.info("WebSocket cancelled")
     except Exception as e:
-        logger.error(f"Error in media stream handler: {e}")
+        logger.error(f"Error in media stream: {e}")
+    
     finally:
-        # CRITICAL: Execute cleanup even if connection is lost
         try:
             if call_sid and conversation_history:
-                # Save final conversation
                 if redis_client:
                     await save_conversation_to_redis(call_sid, conversation_history)
-                    logger.info(f"Final conversation saved to Redis for call {call_sid}")
+                    logger.info(f"Final conversation saved for call {call_sid}")
                 
-                # Send email notification
                 if NOTIFICATION_EMAIL and SENDGRID_API_KEY:
                     await send_call_notification(call_sid, conversation_history)
         except Exception as cleanup_error:
             logger.error(f"Error in cleanup: {cleanup_error}")
+
+async def speech_to_text(audio_data: bytes) -> str:
+    """Convert audio to text using Deepgram"""
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                "https://api.deepgram.com/v1/listen",
+                headers={"Authorization": f"Token {DEEPGRAM_API_KEY}"},
+                content=audio_data,
+                params={
+                    "encoding": "mulaw",
+                    "sample_rate": "8000",
+                    "model": "nova-2"
+                }
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                if result.get("results") and result["results"].get("channels"):
+                    transcript = result["results"]["channels"][0]["alternatives"][0]["transcript"]
+                    return transcript.strip()
+        return ""
+    except Exception as e:
+        logger.error(f"Error in STT: {e}")
+        return ""
 
 async def generate_ai_response(user_input: str, conversation_history: List[dict] = None) -> str:
     """Generate AI response using free Hugging Face LLM with user context"""
     try:
         HF_API_KEY = os.getenv("HF_API_KEY", "")
         
-        if not HF_API_KEY:
-            # Fallback to rule-based if no HF key
+        if not HF_API_KEY or HF_API_KEY.startswith("hf_placeholder"):
+            # Fallback to rule-based if no valid HF key
             user_input_lower = user_input.lower()
             if any(word in user_input_lower for word in ["hello", "hi", "hey"]):
                 return f"Hello! I'm {YOUR_NAME}'s AI assistant. How can I help you today?"
@@ -171,13 +196,12 @@ async def generate_ai_response(user_input: str, conversation_history: List[dict]
         # Build prompt with user context and conversation history
         system_prompt = f"""You are a helpful AI assistant for {YOUR_NAME}. 
 User Information: {USER_INFO}
-
 Respond naturally and concisely in 1-2 sentences. Be conversational and friendly."""
         
         # Add recent conversation context
         context = ""
         if conversation_history:
-            recent = conversation_history[-4:]  # Last 4 messages for context
+            recent = conversation_history[-4:]  # Last 4 messages
             for msg in recent:
                 context += f"{msg['role'].upper()}: {msg['content']}\n"
         
@@ -189,11 +213,7 @@ Respond naturally and concisely in 1-2 sentences. Be conversational and friendly
                 headers={"Authorization": f"Bearer {HF_API_KEY}"},
                 json={
                     "inputs": prompt,
-                    "parameters": {
-                        "max_new_tokens": 100,
-                        "temperature": 0.7,
-                        "top_p": 0.95
-                    }
+                    "parameters": {"max_new_tokens": 100, "temperature": 0.7, "top_p": 0.95}
                 }
             )
             
@@ -201,23 +221,18 @@ Respond naturally and concisely in 1-2 sentences. Be conversational and friendly
                 result = response.json()
                 if result and isinstance(result, list) and len(result) > 0:
                     generated_text = result[0].get("generated_text", "")
-                    # Extract just the assistant response
                     if "Assistant:" in generated_text:
                         ai_response = generated_text.split("Assistant:")[-1].strip()
                     else:
                         ai_response = generated_text.strip()
                     
                     if ai_response and len(ai_response) > 3:
-                        logger.info(f"LLM generated: {ai_response}")
-                        return ai_response[:500]  # Limit to 500 chars
+                        return ai_response[:500]
         
-        # Fallback response
-        return f"How can I assist you with regarding: {user_input}?"
-        
+        return f"How can I assist you with: {user_input}?"
     except Exception as e:
         logger.error(f"Error generating LLM response: {e}")
         return "I'm here to help. Could you please repeat that?"
-
 
 async def send_tts_response(websocket: WebSocket, text: str):
     """Send TTS response back through WebSocket"""
@@ -236,13 +251,17 @@ async def send_tts_response(websocket: WebSocket, text: str):
                 frame_size = 320  # 20ms frames at 8000 Hz
                 for i in range(0, len(audio_data), frame_size):
                     frame = audio_data[i:i+frame_size]
-                    await websocket.send_text(json.dumps({
-                        "event": "media",
-                        "media": {"payload": base64.b64encode(frame).decode()}
-                    }))
-                    await asyncio.sleep(0.02)  # 20ms delay
+                    try:
+                        await websocket.send_text(json.dumps({
+                            "event": "media",
+                            "media": {"payload": base64.b64encode(frame).decode()}
+                        }))
+                        await asyncio.sleep(0.02)  # 20ms delay
+                    except Exception as e:
+                        logger.error(f"Error sending audio frame: {e}")
+                        break
     except Exception as e:
-        logger.error(f"Error sending TTS response: {e}")
+        logger.error(f"Error in TTS: {e}")
 
 async def save_conversation_to_redis(call_sid: str, conversation: List[dict]):
     """Save conversation to Redis with 24-hour TTL"""
@@ -253,7 +272,7 @@ async def save_conversation_to_redis(call_sid: str, conversation: List[dict]):
         key = f"call:{call_sid}"
         await redis_client.setex(
             key,
-            86400,  # 24 hours in seconds
+            86400,  # 24 hours
             json.dumps(conversation)
         )
         logger.info(f"Saved conversation to Redis: {key}")
@@ -266,9 +285,7 @@ async def send_call_notification(call_sid: str, conversation: List[dict]):
         return
     
     try:
-        # Generate summary from conversation
         summary = "\n".join([f"- {msg['role'].upper()}: {msg['content']}" for msg in conversation])
-        
         message = Mail(
             from_email="noreply@callai.com",
             to_emails=NOTIFICATION_EMAIL,
