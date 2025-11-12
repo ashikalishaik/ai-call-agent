@@ -342,9 +342,22 @@ async def handle_media_stream(websocket: WebSocket):
                 receive_from_openai()
             )
     
-    except Exception as e:
-        logger.error(f"Error in WebSocket handler: {e}")
-    
+        except asyncio.CancelledError:
+            # Task was cancelled - this is expected during shutdown
+            logger.warning("Tasks cancelled - cleaning up gracefully")
+            raise  # Re-raise to ensure proper cleanup
+        except websockets.exceptions.ConnectionClosed as e:
+            # WebSocket connection was closed unexpectedly
+            logger.error(f"WebSocket connection closed unexpectedly: {e}")
+        except asyncio.TimeoutError:
+            # Connection timed out
+            logger.error("Connection timeout - API may be unresponsive")
+        except ConnectionError as e:
+            # Generic connection error
+            logger.error(f"Connection error: {e}")
+        except Exception as e:
+            # Catch-all for any other unexpected errors
+            logger.error(f"Unexpected error in WebSocket handler: {e}")    
     finally:
         # This finally block will ALWAYS execute when the WebSocket handler exits
         logger.info(f"Finally block: WebSocket handler cleanup for call_sid={call_sid}")
