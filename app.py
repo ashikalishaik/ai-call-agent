@@ -106,7 +106,7 @@ async def media_stream(websocket: WebSocket):
                 audio_buffer.extend(audio_data)
                 
                 # Once we have enough audio data, process it
-                if len(audio_buffer) >= 8000:  # Process every ~1 second of audio
+                if len(audio_buffer) >= 3200:  # Process every ~400ms of audio
                     try:
                         # Send audio to Deepgram for STT
                         transcription = await speech_to_text(bytes(audio_buffer))
